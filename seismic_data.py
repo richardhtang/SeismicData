@@ -41,7 +41,7 @@ def insert_seismic_data_into_db(streams, db_file):
     '''
     # Connect to a SQLite database (or create one)
     logging.info(f'Insert data into database: {db_file}')
-    conn = sqlite3.connect(db_file)
+    conn = sqlite3.connect(db_file, timeout=10)
     cursor = conn.cursor()
 
     # Create a table for seismic data
@@ -58,16 +58,19 @@ def insert_seismic_data_into_db(streams, db_file):
     ''')
 
     # Insert data into the table
+    cursor.execute('PRAGMA synchronous = OFF;')
+    cursor.execute('PRAGMA journal_mode = MEMORY;')
     for stream_name in sorted(streams.keys()):
         stream = streams[stream_name]
-        logging.info(f'Insert data for stream: {stream_name}')
         for trace in stream:
+            sql_data = []
             metadata = trace.stats
+            trace_times = trace.times('timestamp')
             for i, value in enumerate(trace.data):
-                cursor.execute('''
-                INSERT INTO seismic_data (network, station, location, channel, start_time, amplitude)
-                VALUES (?, ?, ?, ?, ?, ?)''', 
-                (metadata.network, metadata.station, metadata.location, metadata.channel, str(trace.times('utcdatetime')[i]), value))
+                sql_data.append((metadata.network, metadata.station, metadata.location, metadata.channel, trace_times[i], value))
+            cursor.executemany('INSERT INTO seismic_data (network, station, location, channel, timestamp, amplitude) VALUES (?, ?, ?, ?, ?, ?)', sql_data)
+            conn.commit()
+            logging.info(f'Inserted stream {stream_name} trace {str(trace)}')
 
     # Check data
     sql_check = 'SELECT * FROM seismic_data limit 10;'
@@ -76,8 +79,7 @@ def insert_seismic_data_into_db(streams, db_file):
     logging.info('Check SQL data')
     logging.info(f'{sql_check}')
     logging.info(f'{rows}')
-    
-    conn.commit()
+
     conn.close()
 
 def create_helicorder(streams, output):
@@ -137,6 +139,8 @@ def create_map(streams, output):
     )
     ax.add_feature(cfeature.LAND, edgecolor='black')
     ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.RIVERS, edgecolor='blue')
+    ax.add_feature(cfeature.LAKES, edgecolor='blue')
     ax.add_feature(cfeature.BORDERS, linestyle=':')
     ax.add_feature(cfeature.STATES, linestyle='--')
     ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
@@ -148,17 +152,16 @@ def create_map(streams, output):
             ax.plot(lon, lat, marker='^', color='blue', markersize=6, transform=ccrs.PlateCarree())
         else:
             ax.plot(lon, lat, marker='o', color='black', markersize=6, transform=ccrs.PlateCarree())
-        ax.text(lon + 0.02, lat + 0.02, label, fontsize=8, transform=ccrs.PlateCarree())
+        ax.text(lon + 0.002, lat + 0.002, label, fontsize=8, transform=ccrs.PlateCarree())
 
-    print('station_info.values()', station_info.values())
     lats = list(map(lambda x: x['latitude'], station_info.values()))
     lons = list(map(lambda x: x['longitude'], station_info.values()))
-    print([min(lats) - 1, max(lats) + 1, min(lons) - 1, max(lons) + 1])
-    ax.set_extent([min(lons) - 0.5, max(lons) + 0.5, min(lats) - 0.5, max(lats) + 0.5],
+    ax.set_extent([min(lons) - 0.1, max(lons) + 0.1, min(lats) - 0.1, max(lats) + 0.1],
                   crs=ccrs.PlateCarree())
     label1_marker, = ax.plot([], [], '^', color='blue', label='Stations found in data')
     label2_marker, = ax.plot([], [], 'o', color='black', label='Other stations')
     ax.legend(handles=[label1_marker, label2_marker], loc='upper left')
+
     plt.title('Station Locations')
     plt.savefig(output)
     logging.info(f'Save map: {output}')
